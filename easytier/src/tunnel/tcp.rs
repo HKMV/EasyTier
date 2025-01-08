@@ -33,6 +33,7 @@ impl TcpTunnelListener {
 #[async_trait]
 impl TunnelListener for TcpTunnelListener {
     async fn listen(&mut self) -> Result<(), TunnelError> {
+        self.listener = None;
         let addr = check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "tcp")?;
 
         let socket2_socket = socket2::Socket::new(
@@ -248,13 +249,13 @@ mod tests {
     async fn ipv6_domain_pingpong() {
         let listener = TcpTunnelListener::new("tcp://[::1]:31015".parse().unwrap());
         let mut connector =
-            TcpTunnelConnector::new("tcp://test.kkrainbow.top:31015".parse().unwrap());
+            TcpTunnelConnector::new("tcp://test.easytier.top:31015".parse().unwrap());
         connector.set_ip_version(IpVersion::V6);
         _tunnel_pingpong(listener, connector).await;
 
         let listener = TcpTunnelListener::new("tcp://127.0.0.1:31015".parse().unwrap());
         let mut connector =
-            TcpTunnelConnector::new("tcp://test.kkrainbow.top:31015".parse().unwrap());
+            TcpTunnelConnector::new("tcp://test.easytier.top:31015".parse().unwrap());
         connector.set_ip_version(IpVersion::V4);
         _tunnel_pingpong(listener, connector).await;
     }

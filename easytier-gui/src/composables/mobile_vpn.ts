@@ -1,6 +1,9 @@
+import type { NetworkTypes } from 'easytier-frontend-lib'
 import { addPluginListener } from '@tauri-apps/api/core'
+import { Utils } from 'easytier-frontend-lib'
 import { prepare_vpn, start_vpn, stop_vpn } from 'tauri-plugin-vpnservice-api'
-import type { Route } from '~/types/network'
+
+type Route = NetworkTypes.Route
 
 const networkStore = useNetworkStore()
 
@@ -46,9 +49,9 @@ async function doStartVpn(ipv4Addr: string, cidr: number, routes: string[]) {
     return
   }
 
-  console.log('start vpn')
+  console.log('start vpn service', ipv4Addr, cidr, routes)
   const start_ret = await start_vpn({
-    ipv4Addr: `${ipv4Addr}`,
+    ipv4Addr: `${ipv4Addr}/${cidr}`,
     routes,
     disallowedApplications: ['com.kkrainbow.easytier'],
     mtu: 1300,
@@ -110,6 +113,7 @@ function getRoutesForVpn(routes: Route[]): string[] {
 }
 
 async function onNetworkInstanceChange() {
+  console.error('vpn service watch network instance change ids', JSON.stringify(networkStore.networkInstanceIds))
   const insts = networkStore.networkInstanceIds
   if (!insts) {
     await doStopVpn()
@@ -122,10 +126,15 @@ async function onNetworkInstanceChange() {
     return
   }
 
-  const virtual_ip = curNetworkInfo?.node_info?.virtual_ipv4
+  const virtual_ip = Utils.ipv4ToString(curNetworkInfo?.my_node_info?.virtual_ipv4.address)
   if (!virtual_ip || !virtual_ip.length) {
     await doStopVpn()
     return
+  }
+
+  let network_length = curNetworkInfo?.my_node_info?.virtual_ipv4.network_length
+  if (!network_length) {
+    network_length = 24
   }
 
   const routes = getRoutesForVpn(curNetworkInfo?.routes)
@@ -134,7 +143,7 @@ async function onNetworkInstanceChange() {
   const routesChanged = JSON.stringify(routes) !== JSON.stringify(curVpnStatus.routes)
 
   if (ipChanged || routesChanged) {
-    console.log('virtual ip changed', JSON.stringify(curVpnStatus), virtual_ip)
+    console.info('vpn service virtual ip changed', JSON.stringify(curVpnStatus), virtual_ip)
     try {
       await doStopVpn()
     }
@@ -146,7 +155,7 @@ async function onNetworkInstanceChange() {
       await doStartVpn(virtual_ip, 24, routes)
     }
     catch (e) {
-      console.error('start vpn failed, clear all network insts.', e)
+      console.error('start vpn service failed, clear all network insts.', e)
       networkStore.clearNetworkInstances()
       await retainNetworkInstance(networkStore.networkInstanceIds)
     }
@@ -167,6 +176,7 @@ async function watchNetworkInstance() {
     }
     subscribe_running = false
   })
+  console.error('vpn service watch network instance')
 }
 
 export async function initMobileVpnService() {

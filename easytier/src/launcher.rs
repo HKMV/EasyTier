@@ -5,38 +5,33 @@ use std::{
 
 use crate::{
     common::{
-        config::{ConfigLoader, TomlConfigLoader},
+        config::{
+            gen_default_flags, ConfigLoader, NetworkIdentity, PeerConfig, TomlConfigLoader,
+            VpnPortalConfig,
+        },
         constants::EASYTIER_VERSION,
         global_ctx::{EventBusSubscriber, GlobalCtxEvent},
         stun::StunInfoCollectorTrait,
     },
     instance::instance::Instance,
     peers::rpc_service::PeerManagerRpcService,
-    proto::{
-        cli::{PeerInfo, Route},
-        common::StunInfo,
-        peer_rpc::GetIpListResponse,
-    },
-    utils::{list_peer_route_pair, PeerRoutePair},
+    proto::cli::{list_peer_route_pair, PeerInfo, Route},
 };
+use anyhow::Context;
 use chrono::{DateTime, Local};
-use serde::{Deserialize, Serialize};
 use tokio::{sync::broadcast, task::JoinSet};
 
-#[derive(Default, Clone, Debug, Serialize, Deserialize)]
-pub struct MyNodeInfo {
-    pub virtual_ipv4: String,
-    pub hostname: String,
-    pub version: String,
-    pub ips: GetIpListResponse,
-    pub stun_info: StunInfo,
-    pub listeners: Vec<String>,
-    pub vpn_portal_cfg: Option<String>,
+pub type MyNodeInfo = crate::proto::web::MyNodeInfo;
+
+#[derive(serde::Serialize, Clone)]
+pub struct Event {
+    time: DateTime<Local>,
+    event: GlobalCtxEvent,
 }
 
 struct EasyTierData {
-    events: RwLock<VecDeque<(DateTime<Local>, GlobalCtxEvent)>>,
-    node_info: RwLock<MyNodeInfo>,
+    events: RwLock<VecDeque<Event>>,
+    my_node_info: RwLock<MyNodeInfo>,
     routes: RwLock<Vec<Route>>,
     peers: RwLock<Vec<PeerInfo>>,
     tun_fd: Arc<RwLock<Option<i32>>>,
@@ -51,7 +46,7 @@ impl Default for EasyTierData {
         Self {
             event_subscriber: RwLock::new(tx),
             events: RwLock::new(VecDeque::new()),
-            node_info: RwLock::new(MyNodeInfo::default()),
+            my_node_info: RwLock::new(MyNodeInfo::default()),
             routes: RwLock::new(Vec::new()),
             peers: RwLock::new(Vec::new()),
             tun_fd: Arc::new(RwLock::new(None)),
@@ -90,9 +85,12 @@ impl EasyTierLauncher {
     async fn handle_easytier_event(event: GlobalCtxEvent, data: &EasyTierData) {
         let mut events = data.events.write().unwrap();
         let _ = data.event_subscriber.read().unwrap().send(event.clone());
-        events.push_back((chrono::Local::now(), event));
-        if events.len() > 100 {
-            events.pop_front();
+        events.push_front(Event {
+            time: chrono::Local::now(),
+            event: event,
+        });
+        if events.len() > 20 {
+            events.pop_back();
         }
     }
 
@@ -164,18 +162,15 @@ impl EasyTierLauncher {
                         global_ctx_c.get_flags().dev_name.clone();
 
                     let node_info = MyNodeInfo {
-                        virtual_ipv4: global_ctx_c
-                            .get_ipv4()
-                            .map(|x| x.to_string())
-                            .unwrap_or_default(),
+                        virtual_ipv4: global_ctx_c.get_ipv4().map(|ip| ip.into()),
                         hostname: global_ctx_c.get_hostname(),
                         version: EASYTIER_VERSION.to_string(),
-                        ips: global_ctx_c.get_ip_collector().collect_ip_addrs().await,
-                        stun_info: global_ctx_c.get_stun_info_collector().get_stun_info(),
+                        ips: Some(global_ctx_c.get_ip_collector().collect_ip_addrs().await),
+                        stun_info: Some(global_ctx_c.get_stun_info_collector().get_stun_info()),
                         listeners: global_ctx_c
                             .get_running_listeners()
-                            .iter()
-                            .map(|x| x.to_string())
+                            .into_iter()
+                            .map(Into::into)
                             .collect(),
                         vpn_portal_cfg: Some(
                             vpn_portal
@@ -185,7 +180,7 @@ impl EasyTierLauncher {
                                 .await,
                         ),
                     };
-                    *data_c.node_info.write().unwrap() = node_info.clone();
+                    *data_c.my_node_info.write().unwrap() = node_info.clone();
                     *data_c.routes.write().unwrap() = peer_mgr_c.list_routes().await;
                     *data_c.peers.write().unwrap() = PeerManagerRpcService::new(peer_mgr_c.clone())
                         .list_peers()
@@ -281,13 +276,13 @@ impl EasyTierLauncher {
         self.data.tun_dev_name.read().unwrap().clone()
     }
 
-    pub fn get_events(&self) -> Vec<(DateTime<Local>, GlobalCtxEvent)> {
+    pub fn get_events(&self) -> Vec<Event> {
         let events = self.data.events.read().unwrap();
         events.iter().cloned().collect()
     }
 
     pub fn get_node_info(&self) -> MyNodeInfo {
-        self.data.node_info.read().unwrap().clone()
+        self.data.my_node_info.read().unwrap().clone()
     }
 
     pub fn get_routes(&self) -> Vec<Route> {
@@ -311,18 +306,7 @@ impl Drop for EasyTierLauncher {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug)]
-pub struct NetworkInstanceRunningInfo {
-    pub dev_name: String,
-    pub my_node_info: MyNodeInfo,
-    pub events: Vec<(DateTime<Local>, GlobalCtxEvent)>,
-    pub node_info: MyNodeInfo,
-    pub routes: Vec<Route>,
-    pub peers: Vec<PeerInfo>,
-    pub peer_route_pairs: Vec<PeerRoutePair>,
-    pub running: bool,
-    pub error_msg: Option<String>,
-}
+pub type NetworkInstanceRunningInfo = crate::proto::web::NetworkInstanceRunningInfo;
 
 pub struct NetworkInstance {
     config: TomlConfigLoader,
@@ -362,9 +346,12 @@ impl NetworkInstance {
 
         Some(NetworkInstanceRunningInfo {
             dev_name: launcher.get_dev_name(),
-            my_node_info: launcher.get_node_info(),
-            events: launcher.get_events(),
-            node_info: launcher.get_node_info(),
+            my_node_info: Some(launcher.get_node_info()),
+            events: launcher
+                .get_events()
+                .iter()
+                .map(|e| serde_json::to_string(e).unwrap())
+                .collect(),
             routes,
             peers,
             peer_route_pairs,
@@ -411,5 +398,134 @@ impl NetworkInstance {
         } else {
             None
         }
+    }
+}
+
+pub type NetworkingMethod = crate::proto::web::NetworkingMethod;
+pub type NetworkConfig = crate::proto::web::NetworkConfig;
+
+impl NetworkConfig {
+    pub fn gen_config(&self) -> Result<TomlConfigLoader, anyhow::Error> {
+        let cfg = TomlConfigLoader::default();
+        cfg.set_id(
+            self.instance_id
+                .clone()
+                .unwrap_or(uuid::Uuid::new_v4().to_string())
+                .parse()
+                .with_context(|| format!("failed to parse instance id: {:?}", self.instance_id))?,
+        );
+        cfg.set_hostname(self.hostname.clone());
+        cfg.set_dhcp(self.dhcp.unwrap_or_default());
+        cfg.set_inst_name(self.network_name.clone().unwrap_or_default());
+        cfg.set_network_identity(NetworkIdentity::new(
+            self.network_name.clone().unwrap_or_default(),
+            self.network_secret.clone().unwrap_or_default(),
+        ));
+
+        if !cfg.get_dhcp() {
+            let virtual_ipv4 = self.virtual_ipv4.clone().unwrap_or_default();
+            if virtual_ipv4.len() > 0 {
+                let ip = format!("{}/{}", virtual_ipv4, self.network_length.unwrap_or(24))
+                    .parse()
+                    .with_context(|| {
+                        format!(
+                            "failed to parse ipv4 inet address: {}, {:?}",
+                            virtual_ipv4, self.network_length
+                        )
+                    })?;
+                cfg.set_ipv4(Some(ip));
+            }
+        }
+
+        match NetworkingMethod::try_from(self.networking_method.unwrap_or_default())
+            .unwrap_or_default()
+        {
+            NetworkingMethod::PublicServer => {
+                let public_server_url = self.public_server_url.clone().unwrap_or_default();
+                cfg.set_peers(vec![PeerConfig {
+                    uri: public_server_url.parse().with_context(|| {
+                        format!("failed to parse public server uri: {}", public_server_url)
+                    })?,
+                }]);
+            }
+            NetworkingMethod::Manual => {
+                let mut peers = vec![];
+                for peer_url in self.peer_urls.iter() {
+                    if peer_url.is_empty() {
+                        continue;
+                    }
+                    peers.push(PeerConfig {
+                        uri: peer_url
+                            .parse()
+                            .with_context(|| format!("failed to parse peer uri: {}", peer_url))?,
+                    });
+                }
+
+                cfg.set_peers(peers);
+            }
+            NetworkingMethod::Standalone => {}
+        }
+
+        let mut listener_urls = vec![];
+        for listener_url in self.listener_urls.iter() {
+            if listener_url.is_empty() {
+                continue;
+            }
+            listener_urls.push(
+                listener_url
+                    .parse()
+                    .with_context(|| format!("failed to parse listener uri: {}", listener_url))?,
+            );
+        }
+        cfg.set_listeners(listener_urls);
+
+        for n in self.proxy_cidrs.iter() {
+            cfg.add_proxy_cidr(
+                n.parse()
+                    .with_context(|| format!("failed to parse proxy network: {}", n))?,
+            );
+        }
+
+        cfg.set_rpc_portal(
+            format!("0.0.0.0:{}", self.rpc_port.unwrap_or_default())
+                .parse()
+                .with_context(|| format!("failed to parse rpc portal port: {:?}", self.rpc_port))?,
+        );
+
+        if self.enable_vpn_portal.unwrap_or_default() {
+            let cidr = format!(
+                "{}/{}",
+                self.vpn_portal_client_network_addr
+                    .clone()
+                    .unwrap_or_default(),
+                self.vpn_portal_client_network_len.unwrap_or(24)
+            );
+            cfg.set_vpn_portal_config(VpnPortalConfig {
+                client_cidr: cidr
+                    .parse()
+                    .with_context(|| format!("failed to parse vpn portal client cidr: {}", cidr))?,
+                wireguard_listen: format!(
+                    "0.0.0.0:{}",
+                    self.vpn_portal_listen_port.unwrap_or_default()
+                )
+                .parse()
+                .with_context(|| {
+                    format!(
+                        "failed to parse vpn portal wireguard listen port. {:?}",
+                        self.vpn_portal_listen_port
+                    )
+                })?,
+            });
+        }
+        let mut flags = gen_default_flags();
+        if let Some(latency_first) = self.latency_first {
+            flags.latency_first = latency_first;
+        }
+
+        if let Some(dev_name) = self.dev_name.clone() {
+            flags.dev_name = dev_name;
+        }
+        cfg.set_flags(flags);
+        Ok(cfg)
     }
 }

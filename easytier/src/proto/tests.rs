@@ -41,6 +41,7 @@ impl Greeting for GreetingService {
     }
 }
 
+use crate::proto::common::{CompressionAlgoPb, RpcCompressionInfo};
 use crate::proto::rpc_impl::client::Client;
 use crate::proto::rpc_impl::server::Server;
 
@@ -107,6 +108,7 @@ fn random_string(len: usize) -> String {
 
 #[tokio::test]
 async fn rpc_basic_test() {
+    // enable_log();
     let ctx = TestContext::new();
 
     let server = GreetingServer::new(GreetingService {
@@ -119,7 +121,7 @@ async fn rpc_basic_test() {
         .client
         .scoped_client::<GreetingClientFactory<RpcController>>(1, 1, "".to_string());
 
-    // small size req and resp
+    // // small size req and resp
 
     let ctrl = RpcController::default();
     let input = SayHelloRequest {
@@ -127,6 +129,15 @@ async fn rpc_basic_test() {
     };
     let ret = out.say_hello(ctrl, input).await;
     assert_eq!(ret.unwrap().greeting, "Hello world!");
+
+    assert_eq!(1, ctx.client.peer_info_table().len());
+    let first_peer_info = ctx.client.peer_info_table().iter().next().unwrap().clone();
+    assert_eq!(
+        first_peer_info.compression_info.accepted_algo(),
+        CompressionAlgoPb::Zstd,
+    );
+
+    println!("{:?}", ctx.client.peer_info_table());
 
     let ctrl = RpcController::default();
     let input = SayGoodbyeRequest {
@@ -144,6 +155,15 @@ async fn rpc_basic_test() {
 
     assert_eq!(0, ctx.client.inflight_count());
     assert_eq!(0, ctx.server.inflight_count());
+
+    let first_peer_info = ctx.client.peer_info_table().iter().next().unwrap().clone();
+    assert_eq!(
+        first_peer_info.compression_info,
+        RpcCompressionInfo {
+            algo: CompressionAlgoPb::Zstd.into(),
+            accepted_algo: CompressionAlgoPb::Zstd.into(),
+        }
+    );
 }
 
 #[tokio::test]
@@ -267,6 +287,8 @@ async fn standalone_rpc_test() {
     server.registry().register(service, "test");
     server.serve().await.unwrap();
 
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
     let mut client = StandAloneClient::new(TcpTunnelConnector::new(
         "tcp://127.0.0.1:33455".parse().unwrap(),
     ));
@@ -307,6 +329,7 @@ async fn test_bidirect_rpc_manager() {
     use crate::proto::rpc_impl::bidirect::BidirectRpcManager;
     use crate::tunnel::tcp::{TcpTunnelConnector, TcpTunnelListener};
     use crate::tunnel::{TunnelConnector, TunnelListener};
+    use tokio::sync::Notify;
 
     let c = BidirectRpcManager::new();
     let s = BidirectRpcManager::new();
@@ -323,6 +346,8 @@ async fn test_bidirect_rpc_manager() {
     });
     s.rpc_server().registry().register(service, "test");
 
+    let server_test_done = Arc::new(Notify::new());
+    let server_test_done_clone = server_test_done.clone();
     let mut tcp_listener = TcpTunnelListener::new("tcp://0.0.0.0:55443".parse().unwrap());
     let s_task: ScopedTask<()> = tokio::spawn(async move {
         tcp_listener.listen().await.unwrap();
@@ -343,6 +368,8 @@ async fn test_bidirect_rpc_manager() {
             .unwrap();
         assert_eq!(ret.greeting, "Hello Client world!");
         println!("server done, {:?}", ret);
+
+        server_test_done_clone.notify_one();
 
         s.wait().await;
     })
@@ -369,6 +396,7 @@ async fn test_bidirect_rpc_manager() {
     assert_eq!(ret.greeting, "Hello Server world!");
     println!("client done, {:?}", ret);
 
+    server_test_done.notified().await;
     drop(c);
     s_task.await.unwrap();
 }

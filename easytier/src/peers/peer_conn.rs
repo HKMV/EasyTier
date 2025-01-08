@@ -133,15 +133,23 @@ impl PeerConn {
 
         let mut locked = self.recv.lock().await;
         let recv = locked.as_mut().unwrap();
-        let Some(rsp) = recv.next().await else {
-            return Err(Error::WaitRespError(
-                "conn closed during wait handshake response".to_owned(),
-            ));
+        let rsp = match recv.next().await {
+            Some(Ok(rsp)) => rsp,
+            Some(Err(e)) => {
+                return Err(Error::WaitRespError(format!(
+                    "conn recv error during wait handshake response, err: {:?}",
+                    e
+                )))
+            }
+            None => {
+                return Err(Error::WaitRespError(
+                    "conn closed during wait handshake response".to_owned(),
+                ))
+            }
         };
 
         *need_retry = true;
 
-        let rsp = rsp?;
         let Some(peer_mgr_hdr) = rsp.peer_manager_header() else {
             return Err(Error::WaitRespError(format!(
                 "unexpected packet: {:?}, cannot decode peer manager hdr",
@@ -213,6 +221,9 @@ impl PeerConn {
             tracing::warn!("send handshake request error: {:?}", e);
             Error::WaitRespError("send handshake request error".to_owned())
         })?;
+
+        // yield to send the response packet
+        tokio::task::yield_now().await;
 
         Ok(())
     }
@@ -473,13 +484,6 @@ mod tests {
         let c_recorder = Arc::new(DropSendTunnelFilter::new(drop_start, drop_end));
         let c = TunnelWithFilter::new(c, c_recorder.clone());
 
-        let s = if drop_both {
-            let s_recorder = Arc::new(DropSendTunnelFilter::new(drop_start, drop_end));
-            Box::new(TunnelWithFilter::new(s, s_recorder.clone()))
-        } else {
-            s
-        };
-
         let c_peer_id = new_peer_id();
         let s_peer_id = new_peer_id();
 
@@ -495,6 +499,7 @@ mod tests {
         s_peer
             .start_recv_loop(tokio::sync::mpsc::channel(200).0)
             .await;
+        // do not start ping for s, s only reponde to ping from c
 
         assert!(c_ret.is_ok());
         assert!(s_ret.is_ok());
@@ -536,7 +541,7 @@ mod tests {
 
     #[tokio::test]
     async fn peer_conn_pingpong_bothside_timeout() {
-        peer_conn_pingpong_test_common(4, 12, true, true).await;
+        peer_conn_pingpong_test_common(3, 14, true, true).await;
     }
 
     #[tokio::test]

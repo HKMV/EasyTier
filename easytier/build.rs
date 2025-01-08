@@ -67,7 +67,14 @@ impl WindowsBuild {
 
     pub fn check_for_win() {
         // add third_party dir to link search path
-        println!("cargo:rustc-link-search=native=easytier/third_party/");
+        let target = std::env::var("TARGET").unwrap_or_default();
+
+        if target.contains("x86_64") {
+            println!("cargo:rustc-link-search=native=easytier/third_party/");
+        } else if target.contains("aarch64") {
+            println!("cargo:rustc-link-search=native=easytier/third_party/arm64/");
+        }
+
         let protoc_path = if let Some(o) = Self::check_protoc_exist() {
             println!("cargo:info=use os exist protoc: {:?}", o);
             o
@@ -127,6 +134,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "src/proto/error.proto",
         "src/proto/tests.proto",
         "src/proto/cli.proto",
+        "src/proto/web.proto",
     ];
 
     for proto_file in &proto_files {
@@ -138,6 +146,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .type_attribute(".common", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".error", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".cli", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(".web", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(
             "peer_rpc.GetIpListResponse",
             "#[derive(serde::Serialize, serde::Deserialize)]",
@@ -147,7 +156,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .type_attribute("peer_rpc.ForeignNetworkRouteInfoKey", "#[derive(Hash, Eq)]")
         .type_attribute("common.RpcDescriptor", "#[derive(Hash, Eq)]")
         .service_generator(Box::new(rpc_build::ServiceGenerator::new()))
-        .btree_map(&["."])
+        .btree_map(["."])
         .compile_protos(&proto_files, &["src/proto/"])
         .unwrap();
 

@@ -1,6 +1,15 @@
 _version: 2
 
 core_clap:
+  config_server:
+    en: |+
+      config server address, allow format:
+      full url: --config-server udp://127.0.0.1:22020/admin
+      only user name: --config-server admin, will use official server
+    zh-CN: |+
+      配置服务器地址。允许格式：
+      完整URL：--config-server udp://127.0.0.1:22020/admin
+      仅用户名：--config-server admin，将使用官方的服务器
   config_file:
     en: "path to the config file, NOTE: if this is set, all other options will be ignored"
     zh-CN: "配置文件路径，注意：如果设置了这个选项，其他所有选项都将被忽略"
@@ -99,10 +108,12 @@ core_clap:
   relay_network_whitelist:
     en: |+
         only forward traffic from the whitelist networks, supporting wildcard strings, multiple network names can be separated by spaces.
+        if local network (assigned with network_name) is not in the whitelist, the traffic can still be forwarded if no other route path is available.
         if this parameter is empty, forwarding is disabled. by default, all networks are allowed.
         e.g.: '*' (all networks), 'def*' (networks with the prefix 'def'), 'net1 net2' (only allow net1 and net2)"
     zh-CN: |+
         仅转发白名单网络的流量，支持通配符字符串。多个网络名称间可以使用英文空格间隔。
+        如果本地网络（使用 network_name 分配）不在白名单中，如果没有其他路由路径可用，流量仍然可以转发。
         如果该参数为空，则禁用转发。默认允许所有网络。
         例如：'*'（所有网络），'def*'（以def为前缀的网络），'net1 net2'（只允许net1和net2）"
   disable_p2p:
@@ -120,3 +131,11 @@ core_clap:
   ipv6_listener:
     en: "the url of the ipv6 listener, e.g.: tcp://[::]:11010, if not set, will listen on random udp port"
     zh-CN: "IPv6 监听器的URL，例如：tcp://[::]:11010，如果未设置，将在随机UDP端口上监听"
+  compression:
+    en: "compression algorithm to use, support none, zstd. default is none"
+    zh-CN: "要使用的压缩算法，支持 none、zstd。默认为 none"
+
+core_app:
+  panic_backtrace_save:
+    en: "backtrace saved to easytier-panic.log"
+    zh-CN: "回溯信息已保存到easytier-panic.log"
